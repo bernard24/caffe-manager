@@ -1,0 +1,102 @@
+#!/bin/bash 
+
+function absPath {
+	if [[ $1 == /* ]]; then
+		ans=$1
+	else
+		ans=$(pwd)/$1	
+	fi
+} 
+
+if [ -z $TOOLS ]; then
+	. settings.conf
+fi
+absPath $MODELS_PATH
+MODELS_PATH=$ans
+absPath $TOOLS
+TOOLS=$ans
+
+experimentName=$(date +%Y%m%d_%H%M%S)
+solverPrototxt=solver.prototxt
+trainTestPrototxt=train-test.prototxt
+
+while getopts ":w:s:n:h" opt; do
+  case $opt in
+    w)
+      weightsModel=$OPTARG
+      #absPath $weightsModel
+      #weightModels=$ans
+      ;;
+    s)
+      solverPrototxt=$OPTARG
+      ;;
+    n)
+      experimentName=$OPTARG
+      ;;
+    h)
+      echo ""
+      echo "SYNOPSIS"
+      echo "runExperiment [-n nameExperiment] [-s prototxt] [-w caffemodel] [-h]"
+      echo ""
+      echo "OPTIONS"
+      echo -e "-n nameExperiment \tSpecify the name of the experiment. If this option is not used, a name will be automatically generated using the current time and date."
+      echo -e "-s prototxt \t\tIndicate the solver prototxt script. The default name file is solver.prototoxt."
+      echo -e "-w caffemodel \t\tUseful for finetuning, this option allows to specify a caffemodel containing the weights of a previously learned network."
+      echo -e "-h \t\t\tShow these lines."
+      echo ""
+      echo "Before running this script, make sure you have defined in setting.conf the variables \$MODEL_PATH and \$TOOLS."
+      echo ""
+      exit
+      ;;
+    \?)
+      echo "Invalid option: -$OPTARG" >&2
+      ;;
+  esac
+done
+
+# Get name of the network prototext from the solver prototext
+trainTestPrototxt=`grep "net:" $solverPrototxt | grep -v "#" | tr -d \'\"\ | cut -d: -f2`
+
+echo Running experiment $experimentName using $trainTestPrototxt
+
+mkdir -p $experimentName
+mkdir -p $experimentName/Data
+#cp $solverPrototxt $experimentName
+cp $trainTestPrototxt $experimentName/train-test.prototxt
+
+for i in $( grep "source:" $trainTestPrototxt | tr -d \'\"\ | cut -d: -f2 ); do
+	cp $i $experimentName/Data
+done
+
+mkdir -p $MODELS_PATH/$experimentName
+
+# SISO WARNING : assuming solverPrototxt being a relative path
+ls $solverPrototxt
+
+sed 's|snapshot_prefix: \".*\"|snapshot_prefix: \"'"$MODELS_PATH/$experimentName"'/m\"|' < $solverPrototxt > aux
+cp aux $experimentName\/solver.prototxt
+rm aux
+
+cd $experimentName
+
+# Get from solver.prototxt whether the experiment is run on GPU or CPU
+runOnGPU=`grep "solver_mode:" solver.prototxt | grep -v "#" | grep "GPU"`
+
+echo "MODEL: $weightsModel" > .metainfo
+if [ -z $weightsModel ]; then
+	if [ -z $runOnGPU ]; then
+		$TOOLS/caffe train -solver solver.prototxt 2> caffe.log
+	else
+		$TOOLS/caffe train -solver solver.prototxt -gpu 0 2> caffe.log
+	fi
+else
+	absPath $weightsModel
+	weightsModel=$ans
+	echo Finetuning from $weightsModel
+	if [ -z $runOnGPU ]; then
+		$TOOLS/caffe train -solver solver.prototxt -weights $weightsModel 2> caffe.log
+	else
+		$TOOLS/caffe train -solver solver.prototxt -weights $weightsModel -gpu 0 2> caffe.log
+	fi
+fi
+
